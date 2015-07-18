@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 """
 cutiepipe
 
@@ -11,45 +12,77 @@ Example Usage:
  # Terminal 2
  $ cutiepipe | data_copy.csv
 """
+
 import sys
 import select
-import beanstalkc
+import socket
+
+HOST = 'localhost'
+PORT = 10000
+CNXN = (HOST, PORT)
+
+
+def throw_error(message):
+    print >> sys.stderr, "Cutie Pipe: " + message
+
+
+def write_to_sock(e=None):
+
+    # Is there data in the stdin?
+    if select.select([sys.stdin], [], [], 0.0)[0]:
+
+        # Create a simple socket server
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(CNXN)
+        s.listen(1)
+
+        # Accept incoming connections
+        try:
+            client, addr = s.accept()
+        except KeyboardInterrupt:
+            exit()
+
+        # Stream data from stdin to the client
+        try:
+            for line in iter(sys.stdin.readline, ''):
+                client.send(line)
+        except KeyboardInterrupt:
+            exit()
+
+        # Finally, close the client
+        client.close()
+
+    # If no data is in the stdin
+    else:
+        if e.__repr__ and 'Connection refused' in e.__repr__():
+            throw_error("No input pipe detected")
+            exit()
+        throw_error("No input data detected and socket error " + e.__repr__())
+
+
+def read_from_sock(s):
+
+    def get_data():
+        return s.recv(32)
+
+    # Start data retrieval until no more data is available (or connection closes)
+    for packet in iter(get_data, ''):
+        sys.stdout.write(packet)
+        sys.stdout.flush()
 
 
 def main():
 
-    # Attempt to create a localhost connection with beanstalkd
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        beanstalk = beanstalkc.Connection()
-    except beanstalkc.SocketError:
-        print 'Could not find beanstalkd connection.'
-        exit()
-    except Exception as e:
-        raise e
+        sock.connect(CNXN)
+    except socket.error as e:
+        write_to_sock(e)
+    else:
+        read_from_sock(sock)
+    finally:
+        sock.close()
 
-    # Create a cleanup function
-    def fin():
-        beanstalk.close()
-
-    # Wait for data to read and redirect
-    while True:
-
-        # Check for a beanstalk job
-        job = beanstalk.reserve(timeout=0)
-
-        # Process job
-        if job is not None:
-            sys.stdout.write(job.body)
-            sys.stdout.write('\n')
-            job.delete()
-            fin()
-            break
-
-        # Check for data in the stdin
-        if select.select([sys.stdin], [], [], 0.0)[0]:
-            beanstalk.put(sys.stdin.read())
-            fin()
-            break
 
 
 if __name__ == '__main__':
